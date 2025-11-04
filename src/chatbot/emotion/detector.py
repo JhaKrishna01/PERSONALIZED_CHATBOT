@@ -183,6 +183,14 @@ class EmotionDetector:
         detected_emotions = [label for label, score in scores.items() if score >= threshold]
         confidence = dict(scores)
 
+        transcript_lower = (transcript or "").lower()
+        crisis_terms = _KEYWORD_EMOTION_MAP.get("crisis", ())
+        if crisis_terms and any(term in transcript_lower for term in crisis_terms):
+            crisis_boost = max(confidence.get("crisis", 0.0), 0.88)
+            confidence["crisis"] = crisis_boost
+            if crisis_boost >= threshold and "crisis" not in detected_emotions:
+                detected_emotions.append("crisis")
+
         # Merge voice-derived emotions if provided
         if voice_emotions:
             for emotion in voice_emotions:
@@ -209,9 +217,16 @@ class EmotionDetector:
         high_risk = any(confidence.get(emotion, 0.0) > 0.7 for emotion in crisis_keywords)
 
         max_confidence = max(confidence.values(), default=DEFAULT_NEUTRAL_CONFIDENCE)
-        if high_risk or "crisis" in detected_emotions:
+        inferred_crisis = "crisis" in detected_emotions
+
+        if high_risk and max_confidence >= 0.7:
+            # High-confidence scores for crisis keywords from the model -> treat as high risk
             risk_level = "high"
             risk_confidence = max(0.75, min(0.95, max_confidence))
+        elif inferred_crisis and max_confidence >= 0.65:
+            # Keyword-only crisis detection with strong confidence -> high risk but slightly lower bound
+            risk_level = "high"
+            risk_confidence = max(0.7, min(0.9, max_confidence))
         elif len(detected_emotions) > 1:
             risk_level = "moderate"
             risk_confidence = max_confidence * 0.8
@@ -230,3 +245,5 @@ class EmotionDetector:
             risk_level=risk_level,
             confidence=confidence,
             risk_confidence=round(min(max(risk_confidence, 0.0), 1.0), 3),
+            model_trace=model_trace,
+        )

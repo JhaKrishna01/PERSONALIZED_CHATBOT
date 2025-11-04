@@ -65,8 +65,22 @@ class SafetyAdvisor:
         if self.config.expose_detector_trace:
             outcome.actions.append("include_detector_trace")
 
-        if risk_confidence >= self.config.risk_confidence_threshold:
-            outcome.actions.append("escalate_confidence_based")
+        message_lower = message.lower()
+        crisis_terms = (
+            "suicide",
+            "self-harm",
+            "self harm",
+            "end my life",
+            "kill myself",
+            "can't go on",
+            "cant go on",
+            "harm myself",
+        )
+        crisis_language_detected = any(term in message_lower for term in crisis_terms)
+
+        if risk_confidence >= self.config.risk_confidence_threshold or crisis_language_detected:
+            if "escalate_confidence_based" not in outcome.actions:
+                outcome.actions.append("escalate_confidence_based")
             outcome.guidance_messages.append(
                 "Because we detected strong signs of distress, consider reaching out to a crisis support resource or trusted contact immediately."
             )
