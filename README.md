@@ -51,9 +51,7 @@ PERSONALIZED_CHATBOT/
 │           └── processor.py
 ├── tests/
 │   └── test_chat_payload.py
-└── .zencoder/
-    └── rules/
-        └── repo.md
+
 ```
 
 ## Prerequisites
@@ -69,8 +67,8 @@ If any dependency is missing, the application falls back to lightweight keyword 
 ## Quick Start
 1. **Create and activate a virtual environment** (or reuse the existing `venv/`):
    ```powershell
-   python -m venv "c:\Users\KRISHNSA JHA\OneDrive - vitap.ac.in\Desktop\github project\PERSONALIZED_CHATBOT\venv"
-   "c:\Users\KRISHNSA JHA\OneDrive - vitap.ac.in\Desktop\github project\PERSONALIZED_CHATBOT\venv\Scripts\Activate.ps1"
+   python -m venv "c:.......\PERSONALIZED_CHATBOT\venv"
+   "c:\Users\PERSONALIZED_CHATBOT\venv\Scripts\Activate.ps1"
    ```
 2. **Install dependencies** in editable mode:
    ```powershell
