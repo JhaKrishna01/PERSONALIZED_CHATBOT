@@ -5,16 +5,16 @@ import logging
 import os
 from typing import List, Sequence
 
+from ..config import get_bool_env
+
 VectorDoc = str
 VectorResult = List[VectorDoc]
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional dependency guard
-    import chromadb  # type: ignore
-    from sentence_transformers import SentenceTransformer  # type: ignore
+    from ..vector_store.chroma_store import ChromaVectorStore  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
-    chromadb = None  # type: ignore[assignment]
-    SentenceTransformer = None  # type: ignore[assignment]
+    ChromaVectorStore = None  # type: ignore[assignment]
 
 
 _DEFAULT_STRATEGIES: Sequence[str] = (
@@ -47,63 +47,50 @@ class VectorRetrievalStub:
 
     def __init__(self, db_path: str | None = None) -> None:
         self.db_path = db_path or os.getenv("CHROMA_DB_PATH", "./vector_store")
+        self._fallback_store = _InMemoryVectorStore()
+        self._chroma_store = None
 
-        if chromadb is None or SentenceTransformer is None:
-            logger.warning(
-                "ChromaDB or SentenceTransformers not available; using in-memory vector store fallback."
-            )
-            self._store: _InMemoryVectorStore | None = _InMemoryVectorStore()
-            self._client = None
-            self._collection = None
-            self._encoder = None
-        else:
-            self._store = None
-            self._client = chromadb.PersistentClient(path=self.db_path)
-            self._collection = self._client.get_or_create_collection(name="user_context")
-            self._encoder = SentenceTransformer("all-MiniLM-L6-v2")
-
-            if self._collection.count() == 0:
-                self._initialize_default_documents()
-
-    def _initialize_default_documents(self) -> None:
-        """Seed the vector store with coping strategies."""
-
-        if self._store is not None:
-            for doc in _DEFAULT_STRATEGIES:
-                self._store.add(doc)
+        if not get_bool_env("ENABLE_CHROMADB", True):
+            logger.info("ChromaDB integration disabled via environment; using in-memory fallback.")
             return
 
-        assert self._collection is not None and self._encoder is not None
+        if ChromaVectorStore is None:
+            logger.warning(
+                "Chroma vector store dependencies missing; using in-memory vector store fallback."
+            )
+            return
 
-        embeddings = self._encoder.encode(list(_DEFAULT_STRATEGIES)).tolist()
-        ids = [f"default_{i}" for i in range(len(_DEFAULT_STRATEGIES))]
-        self._collection.add(embeddings=embeddings, documents=list(_DEFAULT_STRATEGIES), ids=ids)
+        try:
+            self._chroma_store = ChromaVectorStore(path=self.db_path)
+            self._chroma_store.ensure_seed(_DEFAULT_STRATEGIES)
+            logger.info("Chroma vector store initialized at path %s", self.db_path)
+        except Exception as exc:  # pragma: no cover - initialization guard
+            logger.warning(
+                "Failed to initialize Chroma vector store (%s); falling back to in-memory store.",
+                exc,
+            )
+            self._chroma_store = None
+
+    def _active_store(self) -> _InMemoryVectorStore | ChromaVectorStore:
+        return self._chroma_store or self._fallback_store
 
     def add_user_context(self, user_id: str, text: str) -> None:
         """Add personalized context for a user."""
 
-        if self._store is not None:
-            self._store.add(text)
+        store = self._active_store()
+        if isinstance(store, _InMemoryVectorStore):
+            store.add(text)
             return
 
-        if self._collection is None or self._encoder is None:
-            logger.warning("Vector store is not initialized; skipping context storage.")
-            return
-
-        embedding = self._encoder.encode([text]).tolist()[0]
-        doc_id = f"{user_id}_{self._collection.count()}"
-        self._collection.add(embeddings=[embedding], documents=[text], ids=[doc_id])
+        doc_id = f"{user_id}_{store.count()}"
+        store.add(doc_id=doc_id, text=text)
 
     def fetch_personalized_context(self, user_id: str, query: str, n_results: int = 3) -> VectorResult:
         """Fetch relevant context snippets for the user and query."""
 
-        if self._store is not None:
-            return self._store.query(query, n_results=n_results)
+        store = self._active_store()
+        if isinstance(store, _InMemoryVectorStore):
+            return store.query(query, n_results=n_results)
 
-        if self._collection is None or self._encoder is None:
-            logger.warning("Vector store is not initialized; returning default strategies.")
-            return list(_DEFAULT_STRATEGIES[:n_results])
-
-        query_embedding = self._encoder.encode([query]).tolist()[0]
-        results = self._collection.query(query_embeddings=[query_embedding], n_results=n_results)
-        return results["documents"][0] if results.get("documents") else []
+        results = store.query(text=query, n_results=n_results)
+        return results.documents if results.documents else list(_DEFAULT_STRATEGIES[:n_results])

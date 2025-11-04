@@ -13,7 +13,7 @@ build/
 *.egg-info/
 # DB and vector stores
 *.db
-vector_store/
+/vector_store/
 .zencoder/
 # OS
 .DS_Store
