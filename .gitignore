@@ -1,4 +1,20 @@
-
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 .env
-venv
-.zencoder
+env/
+.venv/
+venv/
+# build / dist
+dist/
+build/
+*.egg-info/
+# DB and vector stores
+*.db
+vector_store/
+.zencoder/
+# OS
+.DS_Store
+Thumbs.db

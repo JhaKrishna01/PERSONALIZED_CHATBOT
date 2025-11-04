@@ -2,17 +2,18 @@
 
 Prototype implementation of a mental-health-oriented chatbot that blends emotion detection, retrieval-augmented responses, safety guardrails, and optional voice processing.
 
-## Features
-- Flask-based API with `/api/v1/chat` endpoint.
-- Centralized configuration helpers (`get_env`, `get_bool_env`, `get_float_env`) with environment-driven safety toggles.
-- Safety advisor that applies disclaimers, confidence-based escalation, and exposes detector traces when enabled.
-- Emotion detection stub tailored for text today with hooks for future voice-informed signals.
-- Voice pipeline stub featuring `VoiceConfig` toggles, audio metadata extraction, and placeholders for transcription and emotion analysis.
-- Therapeutic response generator following the NURSE framework mindset.
-- Vector retrieval stub that returns personalized context snippets for downstream LLM responses.
+## Features at a Glance
+- **Flask API** exposing `/api/v1/health`, `/api/v1/chat`, and `/api/v1/history/<user_id>`.
+- **Config helpers** (`get_env`, `get_bool_env`, `get_float_env`) that surface missing configuration early.
+- **Emotion detection** driven by Transformers with a keyword-based fallback when ML models are unavailable.
+- **Therapeutic LLM responder** using Google Gemini (with graceful fallback messaging and dependency guards).
+- **Safety advisor** that appends disclaimers, surfaces crisis guidance, and exposes detector traces when enabled.
+- **Voice processing** with optional Whisper transcription and energy-heuristic emotion cues.
+- **Vector store layer** that prefers ChromaDB + SentenceTransformers, but falls back to an in-memory store when dependencies are missing.
+- **SQLite persistence** tracking conversation turns for lightweight history retrieval.
 
 ## Project Layout
-```
+```text
 PERSONALIZED_CHATBOT/
 ├── README.md
 ├── pyproject.toml
@@ -24,76 +25,125 @@ PERSONALIZED_CHATBOT/
 │       ├── __init__.py
 │       ├── app.py
 │       ├── wsgi.py
-│       ├── routes/
-│       │   └── v1/
-│       │       ├── __init__.py
-│       │       └── endpoints.py
-│       ├── services/
-│       │   └── chat_pipeline.py
+│       ├── config.py
 │       ├── emotion/
 │       │   ├── __init__.py
 │       │   └── detector.py
 │       ├── llm/
 │       │   ├── __init__.py
+│       │   ├── client.py
 │       │   └── therapeutic_responder.py
+│       ├── routes/
+│       │   └── v1/
+│       │       ├── __init__.py
+│       │       └── endpoints.py
 │       ├── safety/
 │       │   ├── __init__.py
 │       │   └── advisor.py
+│       ├── services/
+│       │   ├── chat_pipeline.py
+│       │   └── db.py
 │       ├── vector_stub/
 │       │   ├── __init__.py
 │       │   └── stub.py
 │       └── voice/
 │           ├── __init__.py
 │           └── processor.py
+├── tests/
+│   └── test_chat_payload.py
 └── .zencoder/
     └── rules/
         └── repo.md
 ```
 
+## Prerequisites
+- Python **3.10+**
+- Optional heavy dependencies (installed automatically when available):
+  - `transformers`, `torch`, and `sentence-transformers` for emotion detection and vector encoding.
+  - `google-generativeai` to access Gemini.
+  - `openai-whisper`, `soundfile`, and `librosa` for voice transcription.
+  - `chromadb` for persistent vector retrieval.
+
+If any dependency is missing, the application falls back to lightweight keyword or in-memory implementations with helpful logging.
+
 ## Quick Start
-1. **Create virtual environment** (already provisioned as `venv/` if desired):
+1. **Create and activate a virtual environment** (or reuse the existing `venv/`):
    ```powershell
    python -m venv "c:\Users\KRISHNSA JHA\OneDrive - vitap.ac.in\Desktop\github project\PERSONALIZED_CHATBOT\venv"
-   "c:\Users\KRISHNSA JHA\OneDrive - vitap.ac.in\Desktop\github project\PERSONALIZED_CHATBOT\venv\Scripts\activate"
+   "c:\Users\KRISHNSA JHA\OneDrive - vitap.ac.in\Desktop\github project\PERSONALIZED_CHATBOT\venv\Scripts\Activate.ps1"
    ```
-2. **Install dependencies**:
+2. **Install dependencies** in editable mode:
    ```powershell
    pip install -e .
    ```
-3. **Run development server**:
+3. **Provision environment variables** by creating a `.env` file:
+   ```ini
+   GEMINI_API_KEY=replace-with-your-key
+   GEMINI_MODEL_NAME=models/gemini-1.5-pro
+   CHROMA_DB_PATH=c:/path/to/vector_store
+   ```
+   > Do **not** commit the `.env` file. The repository now includes rules to ignore it.
+4. **Run the development server**:
    ```powershell
    flask --app chatbot.wsgi run --debug
    ```
-4. **Test endpoints** (PowerShell example):
+5. **Hit the chat endpoint**:
    ```powershell
-   Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/api/v1/chat" -Body (@{user_id="demo"; message="I'm feeling sad today"} | ConvertTo-Json) -ContentType "application/json"
+   $payload = @{ user_id = "demo"; message = "I'm feeling sad today" } | ConvertTo-Json
+   Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/api/v1/chat" -Body $payload -ContentType "application/json"
    ```
 
-## Chat Response Payload
-The `/api/v1/chat` endpoint returns a JSON payload with the following structure:
+## API Overview
+### `GET /api/v1/health`
+Returns a simple `{ "status": "ok" }` payload.
 
-- **reply**: String containing the final LLM response sent to the user.
-- **emotions**: List of detected emotion labels (e.g., `sadness`, `anger`, `neutral`).
-- **risk_level**: One of `low`, `moderate`, or `high`, derived from the detector output.
-- **safety_actions**: List of internal safety actions applied (e.g., `append_disclaimer`).
-- **retrieved_context**: List of context snippets returned from personalized retrieval.
-- **metadata**: Diagnostic block containing confidence signals.
-  - **emotion_confidence**: Mapping of emotion labels to per-emotion confidence scores.
-  - **risk_confidence**: Aggregated risk score in the range `[0.0, 1.0]`.
-  - **detector_trace**: Optional trace data describing detector heuristics. This field is only present when the `expose_detector_trace` feature flag is enabled in the safety advisor configuration.
-- **safety**: Always-present block with three keys.
-  - **disclaimer**: Safety disclaimer string (empty string when no disclaimer applies).
-  - **guidance**: Array of guidance or grounding suggestions surfaced by the safety advisor.
-  - **escalation_contacts**: Array of crisis contact links or phone numbers (empty list when not applicable).
-- **coaching**: Copy of the guidance messages intended for client UIs that surface coaching tips separately.
+### `POST /api/v1/chat`
+**Body schema**
+```json
+{
+  "user_id": "string (default: anonymous)",
+  "message": "required user message",
+  "modalities": ["text", "audio"],
+  "audio_base64": "optional base64-encoded audio",
+  "face_image_b64": "optional base64-encoded image"
+}
+```
+**Response structure**
+- **reply**: LLM-generated therapeutic reply (or supportive fallback text).
+- **emotions**: List of detected emotion labels.
+- **risk_level**: `low`, `moderate`, or `high`.
+- **safety_actions**: Internal guardrail actions applied.
+- **retrieved_context**: Personalized snippets injected into the prompt.
+- **metadata**: Includes emotion/risk confidences and optional detector trace.
+- **safety**: Contains disclaimers, guidance, and escalation contacts.
+- **coaching**: Guidance tips suitable for separate display.
 
-## Vector Database Placeholder
-- `src/chatbot/vector_stub/stub.py` contains `VectorRetrievalStub`, which returns canned context snippets. Your collaborator can replace this with real vector database logic without changing the pipeline API.
+### `GET /api/v1/history/<user_id>`
+Returns the last 20 conversation turns stored for the given user.
 
-## Next Steps
-- Introduce automated schema coverage (unit or contract tests) to validate the enriched `/api/v1/chat` payload.
-- Continue refining confidence-driven escalation heuristics, including emotion-specific guidance playbooks.
-- Integrate production-grade emotion detection and speech pipelines to replace current stubs.
-- Replace the response stub with calls to a therapeutic-tuned LLM.
-- Expand the safety advisor with concrete escalation workflows, hotline data, and localization support.
-- Add tests under `tests/` once implementation details solidify.
+## Testing
+Run the contract tests to verify payload shape and safety hooks:
+```powershell
+pytest
+```
+
+## Deployment Considerations
+- **Secrets**: Store `GEMINI_API_KEY` and any future credentials in a secure secret manager.
+- **Vector store**: For production, point `CHROMA_DB_PATH` to a managed or persistent storage location.
+- **Heavy models**: Ensure hosts have sufficient GPU/CPU resources when enabling Whisper and Transformer pipelines.
+- **Logging**: Integrate structured logging to capture safety events, LLM errors, and fallback usage.
+
+## Roadmap Ideas
+- Integrate real vector databases (Pinecone, Weaviate) and a feature store for personalization.
+- Replace keyword/energy heuristics with dedicated speech emotion recognition models.
+- Layer in escalation workflows tailored to different regions or languages.
+- Expand test coverage with integration tests and synthetic conversation scripts.
+- Add frontend clients (web/mobile) for end-to-end user testing.
+
+## Contributing
+1. Fork the repository and create a feature branch.
+2. Keep `.env` and other secrets out of version control.
+3. Add unit/integration tests where feasible.
+4. Submit a pull request describing the change and safety considerations.
+
+Stay kind and build safely. 😊

@@ -5,9 +5,13 @@ import logging
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
-from google.api_core import exceptions as google_exceptions
-
 from ..config import get_env
+
+try:
+    from google.api_core import exceptions as google_exceptions
+except ModuleNotFoundError:  # pragma: no cover - dependency guard
+    google_exceptions = None  # type: ignore[assignment]
+
 from .client import get_generative_model
 
 
@@ -77,6 +81,27 @@ class TherapeuticResponder:
             "Compose a supportive reply addressing the emotions, respecting the risk level, and offering next-step suggestions.",
         ]
 
+    def _handle_generation_error(self, exc: Exception) -> str:
+        """Map Gemini exceptions to a supportive fallback message."""
+
+        if google_exceptions:
+            if isinstance(exc, google_exceptions.NotFound):
+                logger.error("Gemini model '%s' not found: %s", self.model_name, exc)
+                logger.info("Falling back to supportive static response due to missing model")
+                return SUPPORTIVE_FALLBACK_MESSAGE
+            if isinstance(exc, google_exceptions.InvalidArgument):
+                logger.error("Invalid request to Gemini model '%s': %s", self.model_name, exc)
+                logger.info("Falling back to supportive static response due to invalid configuration")
+                return SUPPORTIVE_FALLBACK_MESSAGE
+            if isinstance(exc, google_exceptions.GoogleAPIError):
+                logger.exception("Unexpected Gemini API error")
+                logger.info("Falling back to supportive static response due to API error: %s", exc)
+                return SUPPORTIVE_FALLBACK_MESSAGE
+
+        logger.exception("Unhandled error while generating therapeutic response")
+        logger.info("Falling back to supportive static response due to unexpected error: %s", exc)
+        return SUPPORTIVE_FALLBACK_MESSAGE
+
     def generate_response(
         self,
         user_message: str,
@@ -110,22 +135,8 @@ class TherapeuticResponder:
                 prompt_parts,
                 generation_config=generation_config,
             )
-        except google_exceptions.NotFound as exc:
-            logger.error("Gemini model '%s' not found: %s", self.model_name, exc)
-            logger.info("Falling back to supportive static response due to missing model")
-            return SUPPORTIVE_FALLBACK_MESSAGE
-        except google_exceptions.InvalidArgument as exc:
-            logger.error("Invalid request to Gemini model '%s': %s", self.model_name, exc)
-            logger.info("Falling back to supportive static response due to invalid configuration")
-            return SUPPORTIVE_FALLBACK_MESSAGE
-        except google_exceptions.GoogleAPIError as exc:
-            logger.exception("Unexpected Gemini API error")
-            logger.info("Falling back to supportive static response due to API error: %s", exc)
-            return SUPPORTIVE_FALLBACK_MESSAGE
         except Exception as exc:  # pragma: no cover - defensive logging only
-            logger.exception("Unhandled error while generating therapeutic response")
-            logger.info("Falling back to supportive static response due to unexpected error: %s", exc)
-            return SUPPORTIVE_FALLBACK_MESSAGE
+            return self._handle_generation_error(exc)
 
         candidate_text: str | None = None
         if response:
@@ -151,11 +162,11 @@ class TherapeuticResponder:
                 logger.warning("Unable to parse Gemini response structure: %s", parse_exc)
 
         if not candidate_text:
-            logger.warning(
-                "Gemini response returned no usable text. finish_reason=%s",
-                getattr(response.candidates[0], "finish_reason", "unknown") if getattr(response, "candidates", None) else "missing",
-            )
-            logger.info("Falling back to supportive static response due to empty candidate text")
+            if getattr(logger, "warning", None):
+                logger.warning(
+                    "Gemini response returned no usable text. finish_reason=%s",
+                    getattr(response.candidates[0], "finish_reason", "unknown") if getattr(response, "candidates", None) else "missing",
+                )
             return SUPPORTIVE_FALLBACK_MESSAGE
 
         return candidate_text.strip()
